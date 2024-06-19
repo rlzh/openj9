@@ -1142,6 +1142,223 @@ void DLTLogic(J9VMThread* vmThread, TR::CompilationInfo *compInfo)
 
 #endif
 
+//------------------------------------------------------------------------------------------------------------------------------------------------
+// CUSTOM START (mimics jstacktrace logic from method_trigger.c)
+//------------------------------------------------------------------------------------------------------------------------------------------------
+
+typedef enum StackFrameMethodType {NATIVE_METHOD, INTERPRETED_METHOD, COMPILED_METHOD} StackFrameMethodType;
+typedef void (*StackTraceFormattingFunction)(J9VMThread *vmThread, J9Method * method, J9UTF8 * className, J9UTF8 * methodName, J9UTF8 * sourceFile, UDATA lineNumber, UDATA programCounter, StackFrameMethodType frameType, UDATA frameCount);
+
+
+/**
+ * Walks buf until end and replaces all '/' characters with '.'
+ *
+ * Used for transforming VM class names into forms recognised by Java programmers
+ */
+static void
+slashesToDots(char * const buf,const char * const end)
+{
+	char * p = buf;
+
+	while(p < end) {
+		if (*p == '/') {
+			*p = '.';
+		}
+
+		p++;
+	}
+}
+
+
+static char
+getFrameTypeChar(const StackFrameMethodType type)
+{
+	switch(type) {
+	case NATIVE_METHOD:
+		return 'N';
+	case COMPILED_METHOD:
+		return 'C';
+	case INTERPRETED_METHOD:
+		return 'I';
+	default:
+		return 'U';
+	};
+}
+
+static int32_t cgGlobalSampleCount = 0;
+static const int8_t CG_SAMPLE_INTERVAL = 30;
+
+/**
+ * Stack frame iterator.  Causes a tracepoint to be triggered for each frame.
+ *
+ * Returns:
+ * J9_STACKWALK_KEEP_ITERATING
+ * J9_STACKWALK_STOP_ITERATING
+ */
+static UDATA
+cgWalkStackIterator(J9VMThread *currentThread, J9StackWalkState *walkState)
+   {
+   J9JavaVM *vm = currentThread->javaVM;
+   J9Method * method = walkState->method;
+   if (NULL == method) 
+      {
+      return J9_STACKWALK_KEEP_ITERATING;
+	   }
+   J9Class *methodClass = J9_CLASS_FROM_METHOD(method);
+   J9UTF8 * className = J9ROMCLASS_CLASSNAME(methodClass->romClass);
+   J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
+   J9UTF8 * methodName = J9ROMMETHOD_NAME(romMethod);
+   J9UTF8 * signature = J9ROMMETHOD_SIGNATURE(romMethod);
+   J9UTF8 *sourceFile = NULL;
+   UDATA lineNumber = -1;
+   UDATA offsetPC = 0;
+	StackFrameMethodType frameType = INTERPRETED_METHOD;
+   UDATA frameCount = (UDATA)walkState->userData1 + 1;
+   
+   // logic for estimating CPU util of sampled methods
+   if(walkState->userData1 == 0) // this means we are at top of stack
+      {
+      // tick counters
+      method->cgCrtSampleIntervalCount++;
+      cgGlobalSampleCount++;
+      if (method->cgCrtSampleIntervalCount == CG_SAMPLE_INTERVAL) 
+         {
+         // calc perceived cpu util
+         if (cgGlobalSampleCount - method->cgStartSampleCount > 0)
+            method->cgPerceivedCPUUtil = (int32_t) CG_SAMPLE_INTERVAL * 1000 / (cgGlobalSampleCount - method->cgStartSampleCount);
+         else 
+            method->cgPerceivedCPUUtil = 0;
+         // reset counters
+         method->cgCrtSampleIntervalCount = 0;
+         method->cgStartSampleCount = cgGlobalSampleCount;
+         }
+      }
+   
+   // logic for formatting stack walk output
+	if (romMethod->modifiers & J9AccNative) 
+      {
+		frameType = NATIVE_METHOD;
+	   } 
+   else 
+      {
+		offsetPC = walkState->bytecodePCOffset;
+
+#ifdef J9VM_OPT_DEBUG_INFO_SERVER
+		sourceFile = getSourceFileNameForROMClass(vm, methodClass->classLoader, methodClass->romClass);
+		if (sourceFile) 
+         {
+			lineNumber = getLineNumberForROMClass(vm, method, offsetPC);
+		   }
+#endif
+
+#ifdef J9VM_INTERP_NATIVE_SUPPORT
+		if (walkState->jitInfo != NULL) 
+         {
+			frameType = COMPILED_METHOD;
+		   }
+#endif
+      }
+
+   PORT_ACCESS_FROM_VMC(currentThread);
+	char buf[1024] = "";
+	char *cursor = buf;
+	char *end = buf + sizeof(buf);
+
+	cursor += j9str_printf(PORTLIB, cursor, end - cursor, "%.*s.%.*s%.*s", J9UTF8_LENGTH(className), J9UTF8_DATA(className), J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName), J9UTF8_LENGTH(signature), J9UTF8_DATA(signature));
+
+	slashesToDots(buf,cursor);
+
+	if (NATIVE_METHOD == frameType) {
+		cursor += j9str_printf(PORTLIB, cursor, end - cursor, " (native)");
+	} else {
+      cursor += j9str_printf(PORTLIB, cursor, end - cursor, " (@:%zu,line:%zu)", offsetPC, lineNumber);
+
+		if (COMPILED_METHOD == frameType) {
+   		cursor += j9str_printf(PORTLIB, cursor, end - cursor, " (compiled)");
+         if (TrcEnabled_Trc_JIT_CGMethodSampleInline) {
+            U_32 numCallSites = getNumInlinedCallSites(walkState->jitInfo);
+            U_32 i = 0;
+            for (i=0; i<numCallSites; i++)
+               {
+               char inlineBuf[1024] = "";
+               char *inlineCursor = inlineBuf;
+               char *inlineEnd = inlineBuf + sizeof(inlineBuf);
+
+               U_8 *inlinedCallSite = getInlinedCallSiteArrayElement(walkState->jitInfo, i);
+               J9Method *inlinedMethod = (J9Method *)getInlinedMethod(inlinedCallSite);
+               J9Class *inlinedMethodClass = J9_CLASS_FROM_METHOD(inlinedMethod);
+               J9UTF8 * inlinedClassName = J9ROMCLASS_CLASSNAME(inlinedMethodClass->romClass);
+               J9ROMMethod *inlinedRomMethod = J9_ROM_METHOD_FROM_RAM_METHOD(inlinedMethod);
+               J9UTF8 * inlinedMethodName = J9ROMMETHOD_NAME(inlinedRomMethod);
+               J9UTF8 * inlinedSignature = J9ROMMETHOD_SIGNATURE(inlinedRomMethod);
+               TR_ByteCodeInfo * bci = NULL;
+               bci = &(((TR_InlinedCallSite *)inlinedCallSite)->_byteCodeInfo);
+               inlineCursor += j9str_printf(PORTLIB, inlineCursor, inlineEnd - inlineCursor, "#%d->#%d @%d %.*s.%.*s%.*s",
+                  i, bci->getCallerIndex(), bci->getByteCodeIndex(), 
+                  J9UTF8_LENGTH(inlinedClassName), J9UTF8_DATA(inlinedClassName), 
+                  J9UTF8_LENGTH(inlinedMethodName), J9UTF8_DATA(inlinedMethodName), 
+                  J9UTF8_LENGTH(inlinedSignature), J9UTF8_DATA(inlinedSignature));
+               slashesToDots(inlineBuf,inlineCursor);
+               
+               inlineCursor += j9str_printf(PORTLIB, inlineCursor, inlineCursor - inlineEnd, " %u bcsz", (U_8) (J9_BYTECODE_END_FROM_ROM_METHOD(inlinedRomMethod) - J9_BYTECODE_START_FROM_ROM_METHOD(inlinedRomMethod)));
+               Trc_JIT_CGMethodSampleInline(currentThread, inlineBuf);
+               }
+         }
+		} else {
+         UDATA count = (UDATA)method->extra;
+         count = count >> 1;
+         cursor += j9str_printf(PORTLIB, cursor, end - cursor, " invkCD:%u,", count);
+      }
+      cursor += j9str_printf(PORTLIB, cursor, end - cursor, " strtCnt:%u, gblCnt:%u,", method->cgStartSampleCount, cgGlobalSampleCount);
+      cursor += j9str_printf(PORTLIB, cursor, end - cursor, " cpu:%.1f%%,", method->cgPerceivedCPUUtil/10.0);
+	}
+   /*add bytecode size*/
+	j9str_printf(PORTLIB, cursor, end - cursor, " %u bcsz", (U_8) (J9_BYTECODE_END_FROM_ROM_METHOD(romMethod) - J9_BYTECODE_START_FROM_ROM_METHOD(romMethod)));
+   
+   if(walkState->userData1 == 0)
+      {
+      Trc_JIT_CGMethodSampleStart(currentThread, walkState->method, walkState->pc, walkState->jitInfo, (UDATA)walkState->userData1 + 1, buf);
+      }
+   else
+      {
+      Trc_JIT_CGMethodSampleContinue(currentThread, walkState->method, walkState->pc, walkState->jitInfo, (UDATA)walkState->userData1 + 1, buf);
+      }
+   walkState->userData1 = (void *) ((UDATA)walkState->userData1 + 1);
+   return J9_STACKWALK_KEEP_ITERATING;
+   }
+
+static void cgWalkStackForSampling(J9VMThread *vmThread)
+   {
+   
+   if (NULL == vmThread->threadObject) 
+      {
+         Trc_JIT_CGMethodStackFrame(vmThread, "No threadObject!");
+         return;
+      } 
+   //  mimics jstacktrace logic from method_trigger.c "doTriggerActionJstacktrace" function
+   J9StackWalkState walkState;
+
+   walkState.walkThread = vmThread;
+   walkState.flags = J9_STACKWALK_ITERATE_FRAMES | J9_STACKWALK_INCLUDE_NATIVES | J9_STACKWALK_VISIBLE_ONLY | J9_STACKWALK_RECORD_BYTECODE_PC_OFFSET;
+   if (TrcEnabled_Trc_JIT_CGMethodSampleInline) {
+      walkState.flags |= J9_STACKWALK_SKIP_INLINES;
+   }
+
+   walkState.skipCount = 0;
+   walkState.userData1 = 0;
+   walkState.frameWalkFunction = cgWalkStackIterator;
+
+   if (vmThread->javaVM->walkStackFrames(vmThread, &walkState) != J9_STACKWALK_RC_NONE)
+      {
+      Trc_JIT_MethodSampleFail(vmThread, 0);
+      }
+   }
+
+
+//------------------------------------------------------------------------------------------------------------------------------------------------
+// CUSTOM END
+//------------------------------------------------------------------------------------------------------------------------------------------------
+
 /**
  * Stack frame iterator.  Causes a tracepoint to be triggered for each frame.
  *
@@ -1383,6 +1600,10 @@ static void jitMethodSampleInterrupt(J9VMThread* vmThread, IDATA handlerKey, voi
       else if(TrcEnabled_Trc_JIT_MethodSampleStart)
          {
          walkStackForSampling(vmThread);
+         }
+      else if (TrcEnabled_Trc_JIT_CGMethodSampleStart)
+         {
+         cgWalkStackForSampling(vmThread);
          }
 
 #if defined(J9VM_JIT_DYNAMIC_LOOP_TRANSFER)

@@ -3874,6 +3874,9 @@ typedef struct J9Method {
 	 * 		a. The field contains the address of the start PC of the JIT compiled method
 	 */
 	void* volatile extra;
+	int16_t cgPerceivedCPUUtil;
+	int32_t cgStartSampleCount;
+	uint8_t cgCrtSampleIntervalCount;
 } J9Method;
 
 typedef struct J9JNIMethodID {
