@@ -1198,6 +1198,11 @@ TR_IProfiler::findOrCreateMethodEntry(J9Method *callerMethod, J9Method *calleeMe
          FLUSH_MEMORY(TR::Compiler->target.isSMP());
          _methodHashTable[bucket] = entry; // chain it
          _numMethodHashEntries++;
+         J9ROMMethod * romMethod = getOriginalROMMethod(callerMethod);
+         if (romMethod != NULL)
+            {
+            entry->_caller._startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
+            }
          }
       }
    return entry;
@@ -1244,6 +1249,7 @@ TR_IPMethodHashTableEntry::add(TR_OpaqueMethodBlock *caller, TR_OpaqueMethodBloc
             newCaller->setPCIndex(pcIndex);
             newCaller->incWeight();
             newCaller->next = _caller.next; // add the existing list of callers (except the embedded one) to this new caller
+            newCaller->_startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(getOriginalROMMethod((J9Method *) caller)));
             FLUSH_MEMORY(TR::Compiler->target.isSMP());
             // Add the newCaller after the embedded caller
             _caller.next = newCaller;
@@ -3645,52 +3651,68 @@ void TR_IProfiler::checkMethodHashTable()
 
       while (entry)
          {
+         bool unloaded = false;
+         if (entry->_startPC == 0 || _compInfo->getPersistentInfo()->isInUnloadedMethod(entry->_startPC)) 
+            {
+            unloaded = true;
+            }
          J9Method *method = (J9Method*)entry->_method;
          fprintf(fout,"method\t");fflush(fout);
-#if 1
-         J9UTF8 * nameUTF8;
-         J9UTF8 * signatureUTF8;
-         J9UTF8 * methodClazzUTRF8;
-         getClassNameSignatureFromMethod(method, methodClazzUTRF8, nameUTF8, signatureUTF8);
-
-         fprintf(fout,"%.*s.%.*s%.*s\t %p\t",
-                J9UTF8_LENGTH(methodClazzUTRF8), J9UTF8_DATA(methodClazzUTRF8), J9UTF8_LENGTH(nameUTF8), J9UTF8_DATA(nameUTF8),
-                J9UTF8_LENGTH(signatureUTF8), J9UTF8_DATA(signatureUTF8), method);fflush(fout);
-#endif
-         int32_t count = 0;
-         fprintf(fout,"\t has %d callers and %" OMR_PRIdPTR " -bytecode long:\n", 0, J9_BYTECODE_END_FROM_ROM_METHOD(getOriginalROMMethod(method)) - J9_BYTECODE_START_FROM_ROM_METHOD(getOriginalROMMethod(method)));
-         fflush(fout);
-         uint32_t i=0;
-
-         for (TR_IPMethodData* it = &entry->_caller; it; it = it->next)
+         if (!unloaded) 
             {
-            count++;
+   #if 1
+            J9UTF8 * nameUTF8;
+            J9UTF8 * signatureUTF8;
+            J9UTF8 * methodClazzUTRF8;
+            getClassNameSignatureFromMethod(method, methodClazzUTRF8, nameUTF8, signatureUTF8);
 
-            TR_OpaqueMethodBlock *meth = it->getMethod();
-            if(meth)
-               {
-               J9UTF8 * caller_nameUTF8;
-               J9UTF8 * caller_signatureUTF8;
-               J9UTF8 * caller_methodClazzUTF8;
-               getClassNameSignatureFromMethod((J9Method*)meth, caller_methodClazzUTF8, caller_nameUTF8, caller_signatureUTF8);
+            fprintf(fout,"%.*s.%.*s%.*s\t %p\t",
+                  J9UTF8_LENGTH(methodClazzUTRF8), J9UTF8_DATA(methodClazzUTRF8), J9UTF8_LENGTH(nameUTF8), J9UTF8_DATA(nameUTF8),
+                  J9UTF8_LENGTH(signatureUTF8), J9UTF8_DATA(signatureUTF8), method);fflush(fout);
+   #endif
+            int32_t count = 0;
+            fprintf(fout,"\t has %d callers and %" OMR_PRIdPTR " -bytecode long:\n", 0, J9_BYTECODE_END_FROM_ROM_METHOD(getOriginalROMMethod(method)) - J9_BYTECODE_START_FROM_ROM_METHOD(getOriginalROMMethod(method)));
+            fflush(fout);
+            uint32_t i=0;
 
-               fprintf(fout,"%p %.*s%.*s%.*s weight %" OMR_PRIu32 " pc %" OMR_PRIx32 "\n", meth,
-                  J9UTF8_LENGTH(caller_methodClazzUTF8), J9UTF8_DATA(caller_methodClazzUTF8),
-                  J9UTF8_LENGTH(caller_nameUTF8), J9UTF8_DATA(caller_nameUTF8),
-                  J9UTF8_LENGTH(caller_signatureUTF8), J9UTF8_DATA(caller_signatureUTF8),
-                  it->getWeight(), it->getPCIndex());
-               fflush(fout);
-               }
-            else
+            for (TR_IPMethodData* it = &entry->_caller; it; it = it->next)
                {
-               fprintf(fout,"meth is null\n");
+               if (_compInfo->getPersistentInfo()->isInUnloadedMethod(it->_startPC))
+                  {
+                  fprintf(fout, "encountered unloaded caller!\n");
+                  continue;
+                  }
+               count++;
+
+               TR_OpaqueMethodBlock *meth = it->getMethod();
+               if(meth)
+                  {
+                  J9UTF8 * caller_nameUTF8;
+                  J9UTF8 * caller_signatureUTF8;
+                  J9UTF8 * caller_methodClazzUTF8;
+                  getClassNameSignatureFromMethod((J9Method*)meth, caller_methodClazzUTF8, caller_nameUTF8, caller_signatureUTF8);
+
+                  fprintf(fout,"%p %.*s%.*s%.*s weight %" OMR_PRIu32 " pc %" OMR_PRIx32 "\n", meth,
+                     J9UTF8_LENGTH(caller_methodClazzUTF8), J9UTF8_DATA(caller_methodClazzUTF8),
+                     J9UTF8_LENGTH(caller_nameUTF8), J9UTF8_DATA(caller_nameUTF8),
+                     J9UTF8_LENGTH(caller_signatureUTF8), J9UTF8_DATA(caller_signatureUTF8),
+                     it->getWeight(), it->getPCIndex());
+                  fflush(fout);
+                  }
+               else
+                  {
+                  fprintf(fout,"meth is null\n");
+                  }
                }
+            //Print the other bucket
+            fprintf(fout, "other bucket: weight %d\n", entry->_otherBucket.getWeight()); fflush(fout);
+            fprintf(fout,": %d \n", count);fflush(fout);
             }
-         //Print the other bucket
-         fprintf(fout, "other bucket: weight %d\n", entry->_otherBucket.getWeight()); fflush(fout);
-
+         else 
+            {
+            fprintf(fout, "encountered unloaded callee!\n");
+            }
          entry = entry->_next;
-         fprintf(fout,": %d \n", count);fflush(fout);
          }
       }
    }
@@ -4323,7 +4345,16 @@ UDATA TR_IProfiler::parseBuffer(J9VMThread * vmThread, const U_8* dataStart, UDA
                }
 
             uint32_t offset = (uint32_t) (pc - caller->bytecodes);
-            findOrCreateMethodEntry(caller, callee , true ,offset);
+            TR_IPMethodHashTableEntry * entry = findOrCreateMethodEntry(caller, callee , true ,offset);
+            entry->_startPC = 0;
+            if (JBinvokespecialsplit != *pc) 
+               {
+               J9ROMMethod * romMethod = getOriginalROMMethodUnchecked(callee);
+               if (romMethod != NULL)
+                  {
+                  entry->_startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
+                  }
+               }
             if (_compInfo->getLowPriorityCompQueue().isTrackingEnabled() &&  // is feature enabled?
                 vmThread == _iprofilerThread) // only IProfiler thread is allowed to execute this
                {
@@ -4349,7 +4380,12 @@ UDATA TR_IProfiler::parseBuffer(J9VMThread * vmThread, const U_8* dataStart, UDA
             if ((callee != NULL) && !fanInDisabled)
                {
                uint32_t offset = (uint32_t) (pc - caller->bytecodes);
-               findOrCreateMethodEntry(caller, callee , true , offset);
+               TR_IPMethodHashTableEntry * entry = findOrCreateMethodEntry(caller, callee , true , offset);
+               J9ROMMethod * romMethod = getOriginalROMMethodUnchecked(callee);
+               if (romMethod != NULL)
+                  {
+                  entry->_caller._startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
+                  }
                if (_compInfo->getLowPriorityCompQueue().isTrackingEnabled() &&  // is feature enabled?
                   vmThread == _iprofilerThread)  // only IProfiler thread is allowed to execute this
                   {

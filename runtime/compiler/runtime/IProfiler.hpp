@@ -260,8 +260,8 @@ class TR_IPMethodData
    void     setWeight(uint32_t weight) { _weight = weight; }
    uint32_t getPCIndex() { return _pcIndex; }
    void     setPCIndex(uint32_t i) { _pcIndex = i; }
-
    TR_IPMethodData* next;
+   uint32_t _startPC; // Custom variable to fix methodHashTable printing; makes sure method is still loaded
 
    private:
    TR_OpaqueMethodBlock *_method;
@@ -290,6 +290,7 @@ struct TR_IPMethodHashTableEntry
    TR_OpaqueMethodBlock      *_method; // callee
    TR_IPMethodData            _caller; // link list of callers and their weights. Capped at MAX_IPMETHOD_CALLERS
    TR_DummyBucket             _otherBucket;
+   uint32_t                   _startPC; // Custom variable to fix methodHashTable printing; makes sure method is still loaded
 
    void add(TR_OpaqueMethodBlock *caller, TR_OpaqueMethodBlock *callee, uint32_t pcIndex);
    };
