@@ -1199,9 +1199,10 @@ TR_IProfiler::findOrCreateMethodEntry(J9Method *callerMethod, J9Method *calleeMe
          _methodHashTable[bucket] = entry; // chain it
          _numMethodHashEntries++;
          J9ROMMethod * romMethod = getOriginalROMMethod(callerMethod);
+         entry->_caller._startPC = 4294967295;
          if (romMethod != NULL)
             {
-            entry->_caller._startPC = (intptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
+            entry->_caller._startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
             }
          }
       }
@@ -1242,6 +1243,7 @@ TR_IPMethodHashTableEntry::add(TR_OpaqueMethodBlock *caller, TR_OpaqueMethodBloc
       else
          {
          TR_IPMethodData* newCaller = (TR_IPMethodData*)TR_IProfiler::allocator()->allocate(sizeof(TR_IPMethodData), std::nothrow);
+         newCaller->_startPC = 4294967295;
          if (newCaller)
             {
             memset(newCaller, 0, sizeof(TR_IPMethodData));
@@ -1249,7 +1251,7 @@ TR_IPMethodHashTableEntry::add(TR_OpaqueMethodBlock *caller, TR_OpaqueMethodBloc
             newCaller->setPCIndex(pcIndex);
             newCaller->incWeight();
             newCaller->next = _caller.next; // add the existing list of callers (except the embedded one) to this new caller
-            newCaller->_startPC = (intptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(getOriginalROMMethod((J9Method *) caller)));
+            newCaller->_startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(getOriginalROMMethod((J9Method *) caller)));
             FLUSH_MEMORY(TR::Compiler->target.isSMP());
             // Add the newCaller after the embedded caller
             _caller.next = newCaller;
@@ -3652,7 +3654,7 @@ void TR_IProfiler::checkMethodHashTable()
       while (entry)
       {
          bool unloaded = false;
-         if (entry->_startPC == -1 || _compInfo->getPersistentInfo()->isInUnloadedMethod(entry->_startPC)) 
+         if (entry->_startPC == 4294967295 || _compInfo->getPersistentInfo()->isInUnloadedMethod(entry->_startPC)) 
          {
             unloaded = true;
          }
@@ -3685,13 +3687,14 @@ void TR_IProfiler::checkMethodHashTable()
 
                for (TR_IPMethodData* it = &entry->_caller; it; it = it->next)
                {
-                  if (it->_startPC == -1 
+                  if (it->_startPC == 4294967295 
                   || _compInfo->getPersistentInfo()->isInUnloadedMethod(it->_startPC) 
                   || _compInfo->getPersistentInfo()->isInUnloadedMethod(it->getPCIndex()))
                   {
-                     fprintf(fout, "encountered unloaded caller! startPC=%d\n", it->_startPC);
+                     fprintf(fout, "encountered unloaded caller! startPC=%ld\n", it->_startPC);
                      continue;
                   }
+                  fprintf(fout, "startPC=%ld, PCIndex=%d\n", it->_startPC, it->getPCIndex());
                   count++;
 
                   TR_OpaqueMethodBlock *meth = it->getMethod();
@@ -3730,7 +3733,7 @@ void TR_IProfiler::checkMethodHashTable()
             }
             else 
             {
-               fprintf(fout, "encountered unloaded callee! startPC=%d\n", entry->_startPC);
+               fprintf(fout, "encountered unloaded callee! startPC=%ld\n", entry->_startPC);
             }
             
          } 
@@ -4377,13 +4380,13 @@ UDATA TR_IProfiler::parseBuffer(J9VMThread * vmThread, const U_8* dataStart, UDA
 
             uint32_t offset = (uint32_t) (pc - caller->bytecodes);
             TR_IPMethodHashTableEntry * entry = findOrCreateMethodEntry(caller, callee , true ,offset);
-            entry->_startPC = -1;
+            entry->_startPC = 4294967295;
             if (JBinvokespecialsplit != *pc) 
                {
                J9ROMMethod * romMethod = getOriginalROMMethod(callee);
                if (romMethod != NULL)
                   {
-                  entry->_startPC = (intptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
+                  entry->_startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
                   }
                }
             if (_compInfo->getLowPriorityCompQueue().isTrackingEnabled() &&  // is feature enabled?
@@ -4413,9 +4416,10 @@ UDATA TR_IProfiler::parseBuffer(J9VMThread * vmThread, const U_8* dataStart, UDA
                uint32_t offset = (uint32_t) (pc - caller->bytecodes);
                TR_IPMethodHashTableEntry * entry = findOrCreateMethodEntry(caller, callee , true , offset);
                J9ROMMethod * romMethod =  getOriginalROMMethod(callee);// getOriginalROMMethodUnchecked(callee);
+               entry->_caller._startPC = 4294967295;
                if (romMethod != NULL)
                   {
-                  entry->_caller._startPC = (intptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
+                  entry->_caller._startPC = (uintptr_t) (J9_BYTECODE_START_FROM_ROM_METHOD(romMethod));
                   }
                if (_compInfo->getLowPriorityCompQueue().isTrackingEnabled() &&  // is feature enabled?
                   vmThread == _iprofilerThread)  // only IProfiler thread is allowed to execute this
