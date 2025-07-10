@@ -141,6 +141,11 @@ bash configure --with-boot-jdk=/home/jenkins/bootjdks/jdk17
 ```
 :warning: The path in the example `--with-boot-jdk=` option is appropriate for the Docker installation. If you're not using the Docker environment, set the path that's appropriate for your setup, such as `<my_home_dir>/bootjdk17`.
 
+Use the follow when building in WSL:
+```
+bash configure --with-boot-jdk=/home/jenkins/bootjdks/jdk17 --host=x86_64-linux-gnu --target=x86_64-linux-gnu --build=x86_64-linux-gnu
+```
+
 :pencil: Configuring and building is not specific to OpenJ9 but uses the OpenJDK build infrastructure with OpenJ9 added.
 Many other configuration options are available, including options to increase the verbosity of the build output to include command lines (`LOG=cmdlines`), more info or debug information.
 For more information see [OpenJDK build troubleshooting](https://htmlpreview.github.io/?https://raw.githubusercontent.com/openjdk/jdk17u/master/doc/building.html#troubleshooting).
